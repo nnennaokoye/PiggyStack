@@ -4,137 +4,137 @@ import { time } from "@nomicfoundation/hardhat-network-helpers";
 import { SignerWithAddress } from "@nomicfoundation/hardhat-ethers/signers";
 import {
   PiggyBankFactory,
-  GroupPiggy,
+  GroupPiggyBank,
   PiggyBank,
   TestToken
 } from "../typechain-types";
+import { Contract } from "ethers";
 
 describe("PiggyBank System", function () {
-  let PiggyBankFactory;
-  let TestToken;
-  let factory: PiggyBankFactory;
-  let token: TestToken;
-  let owner: SignerWithAddress;
-  let addr1: SignerWithAddress;
-  let addr2: SignerWithAddress;
-  let addr3: SignerWithAddress;
-  let addrs: SignerWithAddress[];
+  let TestToken: any;
+  let testToken: Contract;
+  let PiggyBankFactory: any;
+  let factory: Contract;
+  let owner: any;
+  let addr1: any;
+  let addr2: any;
+  let addr3: any;
+  let addrs: any[];
 
   beforeEach(async function () {
-    // Deploy test ERC20 token
-    TestToken = await ethers.getContractFactory("TestToken");
-    token = await TestToken.deploy("Test Token", "TST");
-    await token.waitForDeployment();
-
-    // Deploy factory
-    PiggyBankFactory = await ethers.getContractFactory("PiggyBankFactory");
-    factory = await PiggyBankFactory.deploy();
-    await factory.waitForDeployment();
-
     [owner, addr1, addr2, addr3, ...addrs] = await ethers.getSigners();
 
-    // Whitelist token
-    await factory.whitelistToken(await token.getAddress(), ethers.parseEther("1000000"));
+    // Deploy TestToken
+    TestToken = await ethers.getContractFactory("TestToken");
+    testToken = await TestToken.deploy();
+
+    // Deploy Factory
+    PiggyBankFactory = await ethers.getContractFactory("PiggyBankFactory");
+    factory = await PiggyBankFactory.deploy();
   });
 
   describe("PiggyBankFactory", function () {
     it("Should deploy with ETH whitelisted", async function () {
-      expect(await factory.isValidToken(ethers.ZeroAddress)).to.be.true;
+      expect(await factory.whitelistedTokens(ethers.ZeroAddress)).to.equal(ethers.MaxUint256);
     });
 
     it("Should whitelist tokens correctly", async function () {
-      const tokenAddress = await token.getAddress();
-      expect(await factory.isValidToken(tokenAddress)).to.be.true;
+      const maxAmount = ethers.parseEther("1000");
+      await factory.whitelistToken(await testToken.getAddress(), maxAmount);
+      expect(await factory.whitelistedTokens(await testToken.getAddress())).to.equal(maxAmount);
     });
 
     it("Should create individual piggy bank", async function () {
-      const tx = await factory.createIndividualPiggy(
+      const targetAmount = ethers.parseEther("1");
+      const lockDuration = 7 * 24 * 60 * 60; // 1 week
+
+      await factory.createIndividualPiggy(
         ethers.ZeroAddress,
-        ethers.parseEther("1"),
-        6
+        targetAmount,
+        lockDuration
       );
-      const receipt = await tx.wait();
-      const event = receipt?.logs.find(x => x.fragment && x.fragment.name === "PiggyBankCreated");
-      expect(event).to.not.be.undefined;
+
+      const piggyAddress = await factory.getLastDeployedPiggy();
+      expect(await factory.isPiggyBank(piggyAddress)).to.be.true;
     });
   });
 
   describe("Individual PiggyBank", function () {
-    let piggyBank: PiggyBank;
-    let piggyBankAddress: string;
+    let piggyBank: Contract;
+    const targetAmount = ethers.parseEther("1");
+    const lockDuration = 7 * 24 * 60 * 60; // 1 week
 
     beforeEach(async function () {
-      const tx = await factory.connect(addr1).createIndividualPiggy(
+      await factory.createIndividualPiggy(
         ethers.ZeroAddress,
-        ethers.parseEther("1"),
-        6
+        targetAmount,
+        lockDuration
       );
-      const receipt = await tx.wait();
-      const event = receipt?.logs.find(x => x.fragment && x.fragment.name === "PiggyBankCreated");
-      piggyBankAddress = event!.args![1];
-      piggyBank = await ethers.getContractAt("PiggyBank", piggyBankAddress) as PiggyBank;
+
+      const piggyAddress = await factory.getLastDeployedPiggy();
+      piggyBank = await ethers.getContractAt("PiggyBank", piggyAddress);
     });
 
     it("Should accept deposits", async function () {
-      await piggyBank.connect(addr1).deposit({ value: ethers.parseEther("0.1") });
-      const [currentAmount, targetAmount] = await piggyBank.getProgress();
-      expect(currentAmount).to.equal(ethers.parseEther("0.1"));
+      const depositAmount = ethers.parseEther("0.5");
+      await piggyBank.deposit({ value: depositAmount });
+      expect(await ethers.provider.getBalance(piggyBank.getAddress())).to.equal(depositAmount);
     });
 
     it("Should not allow withdrawals before lock period", async function () {
-      await piggyBank.connect(addr1).deposit({ value: ethers.parseEther("0.1") });
-      // Try to withdraw as addr1 (the owner)
-      await expect(
-        piggyBank.connect(addr1).withdraw(ethers.parseEther("0.1"))
-      ).to.be.revertedWith("Still locked");
+      const depositAmount = ethers.parseEther("0.5");
+      await piggyBank.deposit({ value: depositAmount });
+      await expect(piggyBank.withdraw()).to.be.revertedWith("Lock period active");
     });
   });
 
   describe("GroupPiggy", function () {
-    let groupPiggy: GroupPiggy;
-    let participants: string[];
+    let groupPiggy: Contract;
+    const targetAmount = ethers.parseEther("1");
+    const lockDuration = 24 * 60 * 60; // 1 day
 
     beforeEach(async function () {
-      participants = [addr1.address, addr2.address, addr3.address];
-      const tx = await factory.connect(addr1).createGroupPiggy(
-        "Test Group",
-        participants,
-        2, // Required signatures
-        await token.getAddress(), // Using ERC20 token instead of ETH
-        ethers.parseEther("1"),
-        6
-      );
-      const receipt = await tx.wait();
-      const event = receipt?.logs.find(x => x.fragment && x.fragment.name === "PiggyBankCreated");
-      const groupPiggyAddress = event!.args![1];
-      groupPiggy = await ethers.getContractAt("GroupPiggy", groupPiggyAddress) as GroupPiggy;
+      const participants = [addr1.address, addr2.address, addr3.address];
+      const requiredApprovals = 2;
 
-      // Mint tokens to addr1 and approve spending
-      await token.mint(addr1.address, ethers.parseEther("1"));
-      await token.connect(addr1).approve(groupPiggyAddress, ethers.parseEther("1"));
+      await factory.createGroupPiggy(
+        ethers.ZeroAddress,
+        targetAmount,
+        lockDuration,
+        participants,
+        requiredApprovals
+      );
+
+      const groupPiggyAddress = await factory.getLastDeployedPiggy();
+      groupPiggy = await ethers.getContractAt("GroupPiggyBank", groupPiggyAddress);
     });
 
     it("Should accept deposits from participants", async function () {
-      await groupPiggy.connect(addr1).depositToken(ethers.parseEther("0.1"));
-      const [contribution, isActive, hasApproved] = await groupPiggy.getParticipantInfo(addr1.address);
-      expect(contribution).to.equal(ethers.parseEther("0.1"));
+      const depositAmount = ethers.parseEther("0.5");
+      await groupPiggy.connect(addr1).deposit(depositAmount, { value: depositAmount });
+      await groupPiggy.connect(addr2).deposit(depositAmount, { value: depositAmount });
+      expect(await ethers.provider.getBalance(groupPiggy.getAddress())).to.equal(depositAmount * BigInt(2));
     });
 
     it("Should require multiple approvals for withdrawal", async function () {
-      await groupPiggy.connect(addr1).depositToken(ethers.parseEther("0.3"));
-      
-      // Advance time past lock period
-      await time.increase(time.duration.days(180));
+      const depositAmount = ethers.parseEther("0.5");
+      await groupPiggy.connect(addr1).deposit(depositAmount, { value: depositAmount });
+      await groupPiggy.connect(addr2).deposit(depositAmount, { value: depositAmount });
 
-      // Request withdrawal
-      await groupPiggy.connect(addr1).requestWithdrawal(ethers.parseEther("0.1"));
-      
-      // First approval (from requester) is automatic
-      // Second approval
-      await groupPiggy.connect(addr2).approveWithdrawal(0);
-      
-      const [requester, amount, approvals, executed] = await groupPiggy.getWithdrawalRequest(0);
-      expect(executed).to.be.true;
+      // Fast forward time
+      await ethers.provider.send("evm_increaseTime", [24 * 60 * 60]);
+      await ethers.provider.send("evm_mine", []);
+
+      // Propose withdrawal
+      await groupPiggy.connect(addr1).proposeWithdrawal(false);
+
+      // First approval
+      await groupPiggy.connect(addr1).approveWithdrawal();
+      await expect(groupPiggy.connect(addr1).withdraw()).to.be.revertedWith("Insufficient approvals");
+
+      // Second approval and withdrawal
+      await groupPiggy.connect(addr2).approveWithdrawal();
+      await expect(groupPiggy.connect(addr1).withdraw()).not.to.be.reverted;
     });
   });
 }); 

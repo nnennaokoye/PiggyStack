@@ -6,37 +6,36 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./PiggyBank.sol";
 import "./GroupPiggyBank.sol";
 
-contract PiggyBankFactory {
-    address public immutable owner;
+contract PiggyBankFactory is Ownable {
     mapping(IERC20 => uint256) public whitelistedTokens;
     mapping(address => bool) public piggyBanks;
+    address public lastDeployedPiggy;
 
     event PiggyBankCreated(address indexed piggyBank, address indexed owner);
-    event TokenWhitelisted(IERC20 indexed token, uint256 maxAmount);
+    event TokenWhitelisted(address indexed token, uint256 maxAmount);
     event TokenBlacklisted(address indexed token);
+    event GroupPiggyCreated(address indexed piggyBank, address[] participants);
     
-    constructor() {
-        owner = msg.sender;
-    }
-
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not owner");
-        _;
+    constructor() Ownable() {
+        // Whitelist ETH by default with a high limit
+        whitelistedTokens[IERC20(address(0))] = type(uint256).max;
     }
     
     function whitelistToken(IERC20 token, uint256 maxAmount) external onlyOwner {
         require(address(token) != address(0), "Invalid token address");
+        require(maxAmount > 0, "Invalid max amount");
         whitelistedTokens[token] = maxAmount;
-        emit TokenWhitelisted(token, maxAmount);
+        emit TokenWhitelisted(address(token), maxAmount);
     }
     
-    function createIndividualPiggyBank(
+    function createIndividualPiggy(
         address token,
         uint256 targetAmount,
         uint256 lockDuration
     ) external returns (address) {
+        require(isValidToken(token), "Token not whitelisted");
         if (token != address(0)) {
-            require(whitelistedTokens[IERC20(token)] >= targetAmount, "Target amount exceeds token limit");
+            require(whitelistedTokens[IERC20(token)] >= targetAmount, "Amount exceeds max allowed");
         }
         
         PiggyBank piggyBank = new PiggyBank(
@@ -47,35 +46,36 @@ contract PiggyBankFactory {
         );
         
         piggyBanks[address(piggyBank)] = true;
+        lastDeployedPiggy = address(piggyBank);
         emit PiggyBankCreated(address(piggyBank), msg.sender);
         return address(piggyBank);
     }
     
-    function createGroupPiggyBank(
-        string memory name,
-        address[] memory participants,
-        uint256 requiredApprovals,
+    function createGroupPiggy(
         address token,
         uint256 targetAmount,
-        uint256 lockDuration
+        uint256 lockDuration,
+        address[] memory participants,
+        uint256 requiredApprovals
     ) external returns (address) {
+        require(isValidToken(token), "Token not whitelisted");
         if (token != address(0)) {
-            require(whitelistedTokens[IERC20(token)] >= targetAmount, "Target amount exceeds token limit");
+            require(whitelistedTokens[IERC20(token)] >= targetAmount, "Amount exceeds max allowed");
         }
         require(participants.length > 0, "No participants provided");
         require(requiredApprovals <= participants.length, "Required approvals exceeds participant count");
         
         GroupPiggyBank groupPiggyBank = new GroupPiggyBank(
-            name,
-            participants,
-            requiredApprovals,
             token,
             targetAmount,
-            lockDuration
+            lockDuration,
+            participants,
+            requiredApprovals
         );
         
         piggyBanks[address(groupPiggyBank)] = true;
-        emit PiggyBankCreated(address(groupPiggyBank), msg.sender);
+        lastDeployedPiggy = address(groupPiggyBank);
+        emit GroupPiggyCreated(address(groupPiggyBank), participants);
         return address(groupPiggyBank);
     }
     
@@ -85,16 +85,24 @@ contract PiggyBankFactory {
         emit TokenBlacklisted(token);
     }
     
-    function isPiggyBank(address _address) external view returns (bool) {
-        return piggyBanks[_address];
+    function isValidToken(address token) public view returns (bool) {
+        return whitelistedTokens[IERC20(token)] > 0;
+    }
+    
+    function isPiggyBank(address piggyBank) external view returns (bool) {
+        return piggyBanks[piggyBank];
+    }
+    
+    function getLastDeployedPiggy() external view returns (address) {
+        return lastDeployedPiggy;
     }
     
     // Function to collect penalties
     function collectPenalties(address token, uint256 amount) external onlyOwner {
         if (token == address(0)) {
-            payable(owner).transfer(amount);
+            payable(owner()).transfer(amount);
         } else {
-            IERC20(token).transfer(owner, amount);
+            IERC20(token).transfer(owner(), amount);
         }
     }
     
